@@ -392,7 +392,10 @@ get_rootfh(struct svc_req *rqstp, dirpath *path, nfs_export **expret,
 	struct nfs_fh_len *fh;
 	char		rpath[MAXPATHLEN+1];
 	char		*p = *path;
+	char		*subpath;
 	char		buf[INET6_ADDRSTRLEN];
+	size_t		epathlen;
+	int		dirfd;
 
 	if (*p == '\0')
 		p = "/";
@@ -412,10 +415,19 @@ get_rootfh(struct svc_req *rqstp, dirpath *path, nfs_export **expret,
 		*error = MNT3ERR_ACCES;
 		return NULL;
 	}
-	if (nfsd_path_stat(exp->m_export.e_path, &estb) < 0) {
-		xlog(L_WARNING, "can't stat export point %s: %s",
+
+	dirfd = nfsd_openat(AT_FDCWD, exp->m_export.e_path, O_PATH);
+	if (dirfd == -1) {
+		xlog(L_WARNING, "can't open export point %s: %s",
 		     p, strerror(errno));
 		*error = MNT3ERR_NOENT;
+		return NULL;
+	}
+	if (fstat(dirfd, &estb) == -1) {
+		xlog(L_WARNING, "can't stat export point %s: %s",
+		     p, strerror(errno));
+		*error = MNT3ERR_ACCES;
+		close(dirfd);
 		return NULL;
 	}
 	if (exp->m_export.e_mountpoint &&
@@ -426,18 +438,51 @@ get_rootfh(struct svc_req *rqstp, dirpath *path, nfs_export **expret,
 		xlog(L_WARNING, "request to export an unmounted filesystem: %s",
 		     p);
 		*error = MNT3ERR_NOENT;
+		close(dirfd);
 		return NULL;
 	}
 
-	if (nfsd_path_stat(p, &stb) < 0) {
-		xlog(L_WARNING, "can't stat exported dir %s: %s",
-				p, strerror(errno));
-		if (errno == ENOENT)
-			*error = MNT3ERR_NOENT;
-		else
-			*error = MNT3ERR_ACCES;
+	epathlen = strlen(exp->m_export.e_path);
+	if (epathlen > strlen(p)) {
+		xlog(L_WARNING, "raced with change of exported path: %s", p);
+		*error = MNT3ERR_NOENT;
+		close(dirfd);
 		return NULL;
 	}
+	subpath = &p[epathlen];
+	while (*subpath == '/')
+		subpath++;
+	if (*subpath != '\0') {
+		int fd;
+
+		/* Just perform a lookup of the path */
+		fd = nfsd_openat(dirfd, subpath, O_PATH);
+		close(dirfd);
+		if (fd == -1) {
+			xlog(L_WARNING, "can't open exported dir %s: %s", p,
+			     strerror(errno));
+			if (errno == ENOENT)
+				*error = MNT3ERR_NOENT;
+			else
+				*error = MNT3ERR_ACCES;
+			return NULL;
+		}
+		if (fstat(fd, &stb) == -1) {
+			xlog(L_WARNING, "can't open exported dir %s: %s", p,
+			     strerror(errno));
+			if (errno == ENOENT)
+				*error = MNT3ERR_NOENT;
+			else
+				*error = MNT3ERR_ACCES;
+			close(fd);
+			return NULL;
+		}
+		close(fd);
+	} else {
+		close(dirfd);
+		stb = estb;
+	}
+
 	if (!S_ISDIR(stb.st_mode) && !S_ISREG(stb.st_mode)) {
 		xlog(L_WARNING, "%s is not a directory or regular file", p);
 		*error = MNT3ERR_NOTDIR;

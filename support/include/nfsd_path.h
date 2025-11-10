@@ -18,6 +18,7 @@ char *		nfsd_path_prepend_dir(const char *dir, const char *pathname);
 
 int 		nfsd_path_stat(const char *pathname, struct stat *statbuf);
 int 		nfsd_path_lstat(const char *pathname, struct stat *statbuf);
+int		nfsd_openat(int dirfd, const char *path, int flags);
 
 int		nfsd_path_statfs(const char *pathname,
 				   struct statfs *statbuf);

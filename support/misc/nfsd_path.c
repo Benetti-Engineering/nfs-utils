@@ -203,6 +203,37 @@ nfsd_realpath(const char *path, char *resolved_buf)
         return realpath_buf.res_ptr;
 }
 
+struct nfsd_openat_t {
+	const char *path;
+	int dirfd;
+	int flags;
+	int res_fd;
+	int res_error;
+};
+
+static void nfsd_openatfunc(void *data)
+{
+	struct nfsd_openat_t *d = data;
+
+	d->res_fd = openat(d->dirfd, d->path, d->flags);
+	if (d->res_fd == -1)
+		d->res_error = errno;
+}
+
+int nfsd_openat(int dirfd, const char *path, int flags)
+{
+	struct nfsd_openat_t open_buf = {
+		.path = path,
+		.dirfd = dirfd,
+		.flags = flags,
+	};
+
+	nfsd_run_task(nfsd_openatfunc, &open_buf);
+	if (open_buf.res_fd == -1)
+		errno = open_buf.res_error;
+	return open_buf.res_fd;
+}
+
 struct nfsd_rw_data {
 	int             fd;
 	void*           buf;
