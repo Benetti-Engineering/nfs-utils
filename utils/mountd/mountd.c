@@ -412,6 +412,23 @@ get_rootfh(struct svc_req *rqstp, dirpath *path, nfs_export **expret,
 		*error = MNT3ERR_ACCES;
 		return NULL;
 	}
+	if (nfsd_path_stat(exp->m_export.e_path, &estb) < 0) {
+		xlog(L_WARNING, "can't stat export point %s: %s",
+		     p, strerror(errno));
+		*error = MNT3ERR_NOENT;
+		return NULL;
+	}
+	if (exp->m_export.e_mountpoint &&
+		   !check_is_mountpoint(exp->m_export.e_mountpoint[0]?
+				  exp->m_export.e_mountpoint:
+				  exp->m_export.e_path,
+				  nfsd_path_lstat)) {
+		xlog(L_WARNING, "request to export an unmounted filesystem: %s",
+		     p);
+		*error = MNT3ERR_NOENT;
+		return NULL;
+	}
+
 	if (nfsd_path_stat(p, &stb) < 0) {
 		xlog(L_WARNING, "can't stat exported dir %s: %s",
 				p, strerror(errno));
@@ -426,12 +443,6 @@ get_rootfh(struct svc_req *rqstp, dirpath *path, nfs_export **expret,
 		*error = MNT3ERR_NOTDIR;
 		return NULL;
 	}
-	if (nfsd_path_stat(exp->m_export.e_path, &estb) < 0) {
-		xlog(L_WARNING, "can't stat export point %s: %s",
-		     p, strerror(errno));
-		*error = MNT3ERR_NOENT;
-		return NULL;
-	}
 	if (estb.st_dev != stb.st_dev
 	    && !(exp->m_export.e_flags & NFSEXP_CROSSMOUNT)) {
 		xlog(L_WARNING, "request to export directory %s below nearest filesystem %s",
@@ -439,17 +450,6 @@ get_rootfh(struct svc_req *rqstp, dirpath *path, nfs_export **expret,
 		*error = MNT3ERR_ACCES;
 		return NULL;
 	}
-	if (exp->m_export.e_mountpoint &&
-		   !check_is_mountpoint(exp->m_export.e_mountpoint[0]?
-				  exp->m_export.e_mountpoint:
-				  exp->m_export.e_path,
-				  nfsd_path_lstat)) {
-		xlog(L_WARNING, "request to export an unmounted filesystem: %s",
-		     p);
-		*error = MNT3ERR_NOENT;
-		return NULL;
-	}
-
 	/* This will be a static private nfs_export with just one
 	 * address.  We feed it to kernel then extract the filehandle,
 	 */
