@@ -155,9 +155,15 @@ static struct gssd_k5_kt_princ *gssd_k5_kt_princ_list = NULL;
 static pthread_mutex_t ple_lock = PTHREAD_MUTEX_INITIALIZER;
 
 #ifdef HAVE_SET_ALLOWABLE_ENCTYPES
+/* Encryption types specified in nfs.conf */
 krb5_enctype *allowed_enctypes = NULL;
 int num_allowed_enctypes = 0;
 char *allowed_enctypes_string = NULL;
+
+/* Encryption types permitted by the krb5 library */
+int num_lib_enctypes = 0;
+krb5_enctype *lib_enctypes = NULL;
+char *lib_enctypes_string = NULL;
 #endif
 
 /*==========================*/
@@ -1673,6 +1679,55 @@ out_err:
 out:
 	if (allowed_etypes)
 		conf_free_list(allowed_etypes);
+	return ret;
+}
+
+int
+get_krb5_library_permitted_enctypes(void)
+{
+	krb5_error_code code = 0;
+	krb5_context context;
+	char *k5err = NULL;
+	int ret = 0;
+
+	code = krb5_init_context(&context);
+	if (code) {
+		k5err = gssd_k5_err_msg(NULL, code);
+		printerr(2, "ERROR: %s: %s while initializing krb5 context\n",
+			 __func__, k5err);
+		ret = code;
+		goto out;
+	}
+
+	code = krb5_get_permitted_enctypes(context, &lib_enctypes);
+	if (code) {
+		k5err = gssd_k5_err_msg(context, code);
+		printerr(2, "ERROR: %s: %s while getting permitted enctypes\n",
+			 __func__, k5err);
+		ret = code;
+		goto out_free_context;
+	}
+
+	if (lib_enctypes != NULL)
+		while (lib_enctypes[num_lib_enctypes] != 0)
+			num_lib_enctypes++;
+
+	if (num_lib_enctypes > 0) {
+		if (enctypes_list_to_string(lib_enctypes, num_lib_enctypes,
+					    &lib_enctypes_string) != 0) {
+			printerr(2, "%s: warning: enctypes_list_to_string() failed\n",
+				 __func__);
+			goto out_free_context;
+		}
+		printerr(2, "krb5 library permitted enctypes: %s\n",
+			 lib_enctypes_string);
+	}
+
+out_free_context:
+	krb5_free_context(context);
+
+out:
+	free(k5err);
 	return ret;
 }
 

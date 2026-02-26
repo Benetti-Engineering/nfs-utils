@@ -1222,6 +1222,9 @@ main(int argc, char *argv[])
 	daemon_init(fg);
 
 #ifdef HAVE_SET_ALLOWABLE_ENCTYPES
+	rc = get_krb5_library_permitted_enctypes();
+	if (rc)
+		exit(EXIT_FAILURE);
 	rc = get_allowed_enctypes();
 	if (rc)
 		exit(EXIT_FAILURE);

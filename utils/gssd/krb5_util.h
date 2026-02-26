@@ -30,6 +30,7 @@ int enctypes_list_to_string(krb5_enctype *enctypes, int num_enctypes,
 #ifdef HAVE_SET_ALLOWABLE_ENCTYPES
 int limit_krb5_enctypes(struct rpc_gss_sec *sec);
 int get_allowed_enctypes(void);
+int get_krb5_library_permitted_enctypes(void);
 #endif
 
 /*
