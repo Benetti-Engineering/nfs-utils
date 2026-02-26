@@ -157,6 +157,7 @@ static pthread_mutex_t ple_lock = PTHREAD_MUTEX_INITIALIZER;
 #ifdef HAVE_SET_ALLOWABLE_ENCTYPES
 krb5_enctype *allowed_enctypes = NULL;
 int num_allowed_enctypes = 0;
+char *allowed_enctypes_string = NULL;
 #endif
 
 /*==========================*/
@@ -1580,14 +1581,60 @@ out_cred:
         return ret;
 }
 
+int
+enctypes_list_to_string(krb5_enctype *enctypes, int num_enctypes,
+		        char **enctype_string)
+{
+	char tmp[100], *buf = NULL, *old = NULL;
+	int i, len, ret;
+
+	for (i = 0; i < num_enctypes; i++) {
+		ret = krb5_enctype_to_name(enctypes[i], true, tmp, sizeof(tmp));
+		if (ret == 0) {
+			if (buf == NULL) {
+				len = asprintf(&buf, "%s (%d)", tmp,
+					       enctypes[i]);
+				if (len < 0) {
+					ret = ENOMEM;
+					goto out_err;
+				}
+			} else {
+				old = buf;
+				len = asprintf(&buf, "%s, %s (%d)", old, tmp,
+					       enctypes[i]);
+				if (len < 0) {
+					ret = ENOMEM;
+					goto out_err;
+				}
+				free(old);
+				old = NULL;
+			}
+		} else {
+			printerr(0, "%s: invalid enctype %d",
+				 __func__, enctypes[i]);
+			goto out_err;
+		}
+	}
+	goto out;
+
+out_err:
+	free(buf);
+
+out:
+	if (old != buf)
+		free(old);
+	if (ret == 0)
+		*enctype_string = buf;
+	return ret;
+}
+
 #ifdef HAVE_SET_ALLOWABLE_ENCTYPES
 int
 get_allowed_enctypes(void)
 {
 	struct conf_list *allowed_etypes = NULL;
 	struct conf_list_node *node;
-	char *buf = NULL, *old = NULL;
-	int len, ret = 0;
+	int ret = 0;
 
 	allowed_etypes = conf_get_list("gssd", "allowed-enctypes");
 	if (allowed_etypes) {
@@ -1606,38 +1653,24 @@ get_allowed_enctypes(void)
 					 __func__, node->field);
 				goto out_err;
 			}
-			if (get_verbosity() > 1) {
-				if (buf == NULL) {
-					len = asprintf(&buf, "%s(%d)", node->field,
-						       allowed_enctypes[num_allowed_enctypes]);
-					if (len < 0) {
-						ret = ENOMEM;
-						goto out_err;
-					}
-				} else {
-					old = buf;
-					len = asprintf(&buf, "%s,%s(%d)", old, node->field,
-						       allowed_enctypes[num_allowed_enctypes]);
-					if (len < 0) {
-						ret = ENOMEM;
-						goto out_err;
-					}
-					free(old);
-					old = NULL;
-				}
-			}
 			num_allowed_enctypes++;
 		}
-		printerr(2, "%s: allowed_enctypes = %s", __func__, buf);
+	}
+	if (num_allowed_enctypes > 0) {
+		if (enctypes_list_to_string(allowed_enctypes, num_allowed_enctypes,
+					    &allowed_enctypes_string) != 0) {
+			printerr(2, "%s: warning: enctypes_list_to_string() failed\n",
+				 __func__);
+			goto out;
+		}
+		printerr(2, "%s: config allowed enctypes: %s\n", __func__,
+			 allowed_enctypes_string);
 	}
 	goto out;
 out_err:
 	num_allowed_enctypes = 0;
 	free(allowed_enctypes);
 out:
-	free(buf);
-	if (old != buf)
-		free(old);
 	if (allowed_etypes)
 		conf_free_list(allowed_etypes);
 	return ret;
@@ -1662,8 +1695,10 @@ limit_krb5_enctypes(struct rpc_gss_sec *sec)
 	u_int maj_stat, min_stat;
 	extern int num_krb5_enctypes;
 	extern krb5_enctype *krb5_enctypes;
+	extern char *krb5_enctypes_string;
 	extern int num_allowed_enctypes;
 	extern krb5_enctype *allowed_enctypes;
+	extern char *allowed_enctypes_string;
 	int num_set_enctypes;
 	krb5_enctype *set_enctypes;
 	int err = -1;
@@ -1675,12 +1710,13 @@ limit_krb5_enctypes(struct rpc_gss_sec *sec)
 	}
 
 	if (allowed_enctypes) {
-		printerr(2, "%s: using allowed enctypes from config\n",
-			 __func__);
+		printerr(2, "%s: using allowed enctypes from config: %s\n",
+			 __func__, allowed_enctypes_string);
 		num_set_enctypes = num_allowed_enctypes;
 		set_enctypes = allowed_enctypes;
 	} else if (krb5_enctypes) {
-		printerr(2, "%s: using enctypes from the kernel\n", __func__);
+		printerr(2, "%s: using enctypes from the kernel: %s\n",
+			 __func__, krb5_enctypes_string);
 		num_set_enctypes = num_krb5_enctypes;
 		set_enctypes = krb5_enctypes;
 	} else {
