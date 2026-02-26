@@ -164,6 +164,14 @@ char *allowed_enctypes_string = NULL;
 int num_lib_enctypes = 0;
 krb5_enctype *lib_enctypes = NULL;
 char *lib_enctypes_string = NULL;
+
+/*
+ * The final set of encryption types that will be used in
+ * limit_krb5_enctypes().  See determine_enctypes() below.
+ */
+int num_set_enctypes = 0;
+krb5_enctype *set_enctypes = NULL;
+char *set_enctypes_string = NULL;
 #endif
 
 /*==========================*/
@@ -1732,6 +1740,128 @@ out:
 }
 
 /*
+ * Helper to determine the final set of enctypes that will be passed to
+ * gss_set_allowable_enctypes() in limit_krb5_enctypes().
+ *
+ * It will be the intersection of:
+ *
+ * 1. allowed_enctypes - If allowed-enctypes is defined in nfs.conf, this is
+ *    processed via get_allowed_enctypes() during gssd startup.
+ * 2. krb5_enctypes - This is the list of enctypes passed in the upcall from
+ *    the kernel, and is processed via handle_gssd_upcall() -> parse_enctypes().
+ * 3. lib_enctypes - Processed via get_krb5_library_permitted_enctypes() during
+ *    gssd startup.
+ *
+ * It will be ordered according to lib_enctypes.  This is necessary because when
+ * the MIT kerberos library does a TGS request it initially does so with
+ * referrals enabled, using its default enctype list instead of the application-
+ * provided one.  It still ensures that the resulting ticket is using an enctype
+ * from the application-provided list, it just might not be the highest priority
+ * enctype from the application-provided list.
+ *
+ * That can result in the machine cred's service ticket using a different
+ * enctype than a user cred's service ticket (particularly in the case of
+ * contrained delegation with gssproxy), which will lead to XDR decoding
+ * failures in the kernel.
+ *
+ * The best way to combat this to configure the krb5 library's
+ * permitted_enctypes list to have the same order as the kernel's
+ * gss_krb5_prepare_enctype_priority_list (which is set at build time), but not
+ * all distros do that.  The second best way is to make sure our list is ordered
+ * according to the krb5 library's list, hence this helper function.
+ */
+static int
+determine_enctypes(krb5_enctype **set_enctypes, int *num_set_enctypes,
+		   char **set_enctypes_string)
+{
+	extern int num_allowed_enctypes, num_krb5_enctypes, num_lib_enctypes;
+	extern krb5_enctype *allowed_enctypes, *krb5_enctypes, *lib_enctypes;
+	extern char *allowed_enctypes_string, *krb5_enctypes_string,
+	       *lib_enctypes_string;
+	krb5_enctype *enctypes;
+	int num_enctypes = 0;
+	char *enctypes_string;
+	int i, j, k;
+
+	if (krb5_enctypes) {
+		printerr(2, "%s: kernel enctypes: %s\n",
+			 __func__, krb5_enctypes_string);
+	} else {
+		printerr(2, "%s: kernel enctype list is empty\n",
+			 __func__);
+		return -1;
+	}
+
+	if (lib_enctypes) {
+		printerr(2, "%s: krb5 library enctypes: %s\n",
+			 __func__, lib_enctypes_string);
+	} else {
+		printerr(2, "%s: krb5 library enctype list is empty\n",
+			 __func__);
+		return -1;
+	}
+
+	if (allowed_enctypes) {
+		printerr(2, "%s: config allowed enctypes: %s\n",
+			 __func__, allowed_enctypes_string);
+	}
+
+	if (allowed_enctypes) {
+		enctypes = (krb5_enctype *) calloc(num_allowed_enctypes,
+						   sizeof(krb5_enctype));
+		if (enctypes == NULL)
+			return ENOMEM;
+		for (i = 0; i < num_lib_enctypes; i++) {
+			for (j = 0; j < num_krb5_enctypes; j++) {
+				if (lib_enctypes[i] == krb5_enctypes[j]) {
+					for (k = 0; k < num_allowed_enctypes; k++) {
+						if (lib_enctypes[i] == allowed_enctypes[k]) {
+							enctypes[num_enctypes++] = lib_enctypes[i];
+							break;
+						}
+					}
+					break;
+				}
+			}
+		}
+	} else {
+		enctypes = (krb5_enctype *) calloc(num_krb5_enctypes,
+						   sizeof(krb5_enctype));
+		if (enctypes == NULL)
+			return ENOMEM;
+		for (i = 0; i < num_lib_enctypes; i++) {
+			for (j = 0; j < num_krb5_enctypes; j++) {
+				if (lib_enctypes[i] == krb5_enctypes[j]) {
+					enctypes[num_enctypes++] = lib_enctypes[i];
+					break;
+				}
+			}
+		}
+	}
+
+	if (num_enctypes > 0) {
+		if (enctypes_list_to_string(enctypes, num_enctypes,
+					    &enctypes_string) != 0) {
+			printerr(2, "%s: warning: enctypes_list_to_string() failed\n",
+				 __func__);
+			return -1;
+		}
+		printerr(2, "%s: result enctypes: %s\n",
+			 __func__, enctypes_string);
+	} else {
+		printerr(2, "%s: no result enctypes\n",
+			 __func__);
+		free(enctypes);
+		return -1;
+	}
+
+	*set_enctypes = enctypes;
+	*num_set_enctypes = num_enctypes;
+	*set_enctypes_string = enctypes_string;
+	return 0;
+}
+
+/*
  * this routine obtains a credentials handle via gss_acquire_cred()
  * then calls gss_krb5_set_allowable_enctypes() to limit the encryption
  * types negotiated.
@@ -1743,19 +1873,13 @@ out:
  *	0 => all went well
  *     -1 => there was an error
  */
-
 int
 limit_krb5_enctypes(struct rpc_gss_sec *sec)
 {
 	u_int maj_stat, min_stat;
-	extern int num_krb5_enctypes;
-	extern krb5_enctype *krb5_enctypes;
-	extern char *krb5_enctypes_string;
-	extern int num_allowed_enctypes;
-	extern krb5_enctype *allowed_enctypes;
-	extern char *allowed_enctypes_string;
-	int num_set_enctypes;
-	krb5_enctype *set_enctypes;
+	extern int num_set_enctypes;
+	extern krb5_enctype *set_enctypes;
+	extern char *set_enctypes_string;
 	int err = -1;
 
 	if (sec->cred == GSS_C_NO_CREDENTIAL) {
@@ -1764,27 +1888,17 @@ limit_krb5_enctypes(struct rpc_gss_sec *sec)
 			return -1;
 	}
 
-	if (allowed_enctypes) {
-		printerr(2, "%s: using allowed enctypes from config: %s\n",
-			 __func__, allowed_enctypes_string);
-		num_set_enctypes = num_allowed_enctypes;
-		set_enctypes = allowed_enctypes;
-	} else if (krb5_enctypes) {
-		printerr(2, "%s: using enctypes from the kernel: %s\n",
-			 __func__, krb5_enctypes_string);
-		num_set_enctypes = num_krb5_enctypes;
-		set_enctypes = krb5_enctypes;
-	} else {
-		/*
-		 * If we didn't get a list of enctypes from the kernel, that
-		 * would mean it did a v0 upcall which is for older gssd's.
-		 * That would indicate a serious problem, so we shouldn't
-		 * continue.
-		 */
-		printerr(0, "%s: no enctypes received from the kernel, and "
-			 "allowed-enctypes not set in the config\n", __func__);
-		return -1;
+	if (set_enctypes == NULL) {
+		err = determine_enctypes(&set_enctypes, &num_set_enctypes,
+					 &set_enctypes_string);
+		if (err) {
+			printerr(2, "%s: failed to determine set_enctypes\n",
+				 __func__);
+			return -1;
+		}
 	}
+
+	printerr(2, "%s: %s\n", __func__, set_enctypes_string);
 
 	maj_stat = gss_set_allowable_enctypes(&min_stat, sec->cred,
 				&krb5oid, num_set_enctypes, set_enctypes);
