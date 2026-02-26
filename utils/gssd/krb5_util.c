@@ -155,7 +155,6 @@ static struct gssd_k5_kt_princ *gssd_k5_kt_princ_list = NULL;
 static pthread_mutex_t ple_lock = PTHREAD_MUTEX_INITIALIZER;
 
 #ifdef HAVE_SET_ALLOWABLE_ENCTYPES
-int limit_to_legacy_enctypes = 0;
 krb5_enctype *allowed_enctypes = NULL;
 int num_allowed_enctypes = 0;
 #endif
@@ -1661,10 +1660,6 @@ int
 limit_krb5_enctypes(struct rpc_gss_sec *sec)
 {
 	u_int maj_stat, min_stat;
-	krb5_enctype enctypes[] = { ENCTYPE_DES_CBC_CRC,
-				    ENCTYPE_DES_CBC_MD5,
-				    ENCTYPE_DES_CBC_MD4 };
-	int num_enctypes = sizeof(enctypes) / sizeof(enctypes[0]);
 	extern int num_krb5_enctypes;
 	extern krb5_enctype *krb5_enctypes;
 	extern int num_allowed_enctypes;
@@ -1679,26 +1674,25 @@ limit_krb5_enctypes(struct rpc_gss_sec *sec)
 			return -1;
 	}
 
-	/*
-	 * If we failed for any reason to produce global
-	 * list of supported enctypes, use local default here.
-	 */
-	if (krb5_enctypes == NULL || limit_to_legacy_enctypes ||
-			allowed_enctypes) {
-		if (allowed_enctypes) {
-			printerr(2, "%s: using allowed enctypes from config\n",
-				 __func__);
-			num_set_enctypes = num_allowed_enctypes;
-			set_enctypes = allowed_enctypes;
-		} else {
-			printerr(2, "%s: using legacy enctypes\n", __func__);
-			num_set_enctypes = num_enctypes;
-			set_enctypes = enctypes;
-		}
-	} else {
+	if (allowed_enctypes) {
+		printerr(2, "%s: using allowed enctypes from config\n",
+			 __func__);
+		num_set_enctypes = num_allowed_enctypes;
+		set_enctypes = allowed_enctypes;
+	} else if (krb5_enctypes) {
 		printerr(2, "%s: using enctypes from the kernel\n", __func__);
 		num_set_enctypes = num_krb5_enctypes;
 		set_enctypes = krb5_enctypes;
+	} else {
+		/*
+		 * If we didn't get a list of enctypes from the kernel, that
+		 * would mean it did a v0 upcall which is for older gssd's.
+		 * That would indicate a serious problem, so we shouldn't
+		 * continue.
+		 */
+		printerr(0, "%s: no enctypes received from the kernel, and "
+			 "allowed-enctypes not set in the config\n", __func__);
+		return -1;
 	}
 
 	maj_stat = gss_set_allowable_enctypes(&min_stat, sec->cred,
