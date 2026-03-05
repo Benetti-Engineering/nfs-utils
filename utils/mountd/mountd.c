@@ -31,6 +31,7 @@
 #include "nfsd_path.h"
 #include "nfslib.h"
 #include "export.h"
+#include "nfs_ucred.h"
 
 extern void my_svc_run(void);
 
@@ -40,6 +41,7 @@ static struct nfs_fh_len *get_rootfh(struct svc_req *, dirpath *, nfs_export **,
 
 int reverse_resolve = 0;
 int manage_gids;
+int apply_root_cred;
 int use_ipaddr = -1;
 
 /* PRC: a high-availability callout program can be specified with -H
@@ -74,9 +76,10 @@ static struct option longopts[] =
 	{ "log-auth", 0, 0, 'l'},
 	{ "cache-use-ipaddr", 0, 0, 'i'},
 	{ "ttl", 1, 0, 'T'},
+	{ "apply-root-cred", 0, 0, 'c' },
 	{ NULL, 0, 0, 0 }
 };
-static char shortopts[] = "o:nFd:p:P:hH:N:V:vurs:t:gliT:";
+static char shortopts[] = "o:nFd:p:P:hH:N:V:vurs:t:gliT:c";
 
 #define NFSVERSBIT(vers)	(0x1 << (vers - 1))
 #define NFSVERSBIT_ALL		(NFSVERSBIT(2) | NFSVERSBIT(3) | NFSVERSBIT(4))
@@ -453,11 +456,27 @@ get_rootfh(struct svc_req *rqstp, dirpath *path, nfs_export **expret,
 	while (*subpath == '/')
 		subpath++;
 	if (*subpath != '\0') {
+		struct nfs_ucred *cred = NULL;
 		int fd;
 
+		/* Load the user cred */
+		if (!apply_root_cred) {
+			nfs_ucred_get(&cred, rqstp, &exp->m_export);
+			if (cred == NULL) {
+				xlog(L_WARNING, "can't retrieve credential");
+				*error = MNT3ERR_ACCES;
+				close(dirfd);
+				return NULL;
+			}
+			if (manage_gids)
+				nfs_ucred_reload_groups(cred, &exp->m_export);
+		}
+
 		/* Just perform a lookup of the path */
-		fd = nfsd_openat(dirfd, subpath, O_PATH);
+		fd = nfsd_cred_openat(cred, dirfd, subpath, O_PATH);
 		close(dirfd);
+		if (cred)
+			nfs_ucred_free(cred);
 		if (fd == -1) {
 			xlog(L_WARNING, "can't open exported dir %s: %s", p,
 			     strerror(errno));
@@ -681,6 +700,8 @@ read_mountd_conf(char **argv)
 	ttl = conf_get_num("mountd", "ttl", default_ttl);
 	if (ttl > 0)
 		default_ttl = ttl;
+	apply_root_cred = conf_get_bool("mountd", "apply-root-cred",
+					apply_root_cred);
 }
 
 int
@@ -793,6 +814,9 @@ main(int argc, char **argv)
 				usage(argv[0], 1);
 			}
 			default_ttl = ttl;
+			break;
+		case 'c':
+			apply_root_cred = 1;
 			break;
 		case 0:
 			break;

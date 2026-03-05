@@ -17,6 +17,7 @@
 #include "xstat.h"
 #include "nfslib.h"
 #include "nfsd_path.h"
+#include "nfs_ucred.h"
 #include "workqueue.h"
 
 static struct xthread_workqueue *nfsd_wq = NULL;
@@ -204,6 +205,7 @@ nfsd_realpath(const char *path, char *resolved_buf)
 }
 
 struct nfsd_openat_t {
+	const struct nfs_ucred *cred;
 	const char *path;
 	int dirfd;
 	int flags;
@@ -220,15 +222,41 @@ static void nfsd_openatfunc(void *data)
 		d->res_error = errno;
 }
 
-int nfsd_openat(int dirfd, const char *path, int flags)
+static void nfsd_cred_openatfunc(void *data)
+{
+	struct nfsd_openat_t *d = data;
+	struct nfs_ucred *saved = NULL;
+	int ret;
+
+	ret = nfs_ucred_swap_effective(d->cred, &saved);
+	if (ret != 0) {
+		d->res_fd = -1;
+		d->res_error = ret;
+		return;
+	}
+
+	nfsd_openatfunc(data);
+
+	if (saved != NULL) {
+		nfs_ucred_swap_effective(saved, NULL);
+		nfs_ucred_free(saved);
+	}
+}
+
+int nfsd_cred_openat(const struct nfs_ucred *cred, int dirfd, const char *path,
+		     int flags)
 {
 	struct nfsd_openat_t open_buf = {
+		.cred = cred,
 		.path = path,
 		.dirfd = dirfd,
 		.flags = flags,
 	};
 
-	nfsd_run_task(nfsd_openatfunc, &open_buf);
+	if (cred)
+		nfsd_run_task(nfsd_cred_openatfunc, &open_buf);
+	else
+		nfsd_run_task(nfsd_openatfunc, &open_buf);
 	if (open_buf.res_fd == -1)
 		errno = open_buf.res_error;
 	return open_buf.res_fd;
