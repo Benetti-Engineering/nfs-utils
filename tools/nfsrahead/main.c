@@ -191,7 +191,7 @@ static int conf_get_readahead(const char *kind) {
 int main(int argc, char **argv)
 {
 	int ret = 0, opt;
-	struct device_info device;
+	struct device_info device = { 0 };
 	unsigned int readahead = 128, log_level, log_stderr = 0;
 
 
