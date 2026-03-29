@@ -164,6 +164,8 @@ static const char *nfsd4_ops[] = {
 	[OP_REMOVEXATTR]	= "OP_REMOVEXATTR",
 };
 
+static int fetch_current_listeners(struct nl_sock *sock);
+
 static int error_handler(struct sockaddr_nl *nla, struct nlmsgerr *err,
 			 void *arg)
 {
@@ -742,6 +744,7 @@ static int threads_func(struct nl_sock *sock, int argc, char **argv)
 	int minthreads = -1;
 	int opt, pools = 0;
 	uuid_t fh_key;
+	bool zero_threads = false;
 
 	uuid_clear(fh_key);
 	optind = 1;
@@ -796,12 +799,31 @@ static int threads_func(struct nl_sock *sock, int argc, char **argv)
 			}
 
 			pool_threads[i] = strtol(targv[i], &endptr, 0);
+			if (!pool_threads[i])
+				zero_threads = true;
 			if (!endptr || *endptr != '\0') {
 				xlog(L_ERROR, "Invalid threads value %s.", argv[1]);
 				return 1;
 			}
 		}
 	}
+	/* check if there are active listeners added */
+	if (fetch_current_listeners(sock)) {
+		xlog(L_ERROR, "Unable to determine if listeners were added");
+		return 1;
+	}
+	if (!nfsd_socket_count) {
+		if (zero_threads) {
+			/* Note: we can never have a server with threads and no
+			 * listener. If we ever add functionality to remove
+			 * listeners on an active server, we need to revisit this.
+			 */
+			return 0;
+		}
+		xlog(L_ERROR, "No active listeners added, not starting threads");
+		return 1;
+	}
+
 	return threads_doit(sock, cmd, 0, 0, pools, pool_threads, NULL,
 				minthreads, fh_key);
 }
