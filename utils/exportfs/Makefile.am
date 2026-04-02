@@ -14,6 +14,7 @@ exportfs_LDADD = ../../support/export/libexport.a \
 		 $(LIBWRAP) $(LIBNSL) $(LIBPTHREAD) \
 		 $(LIBNL3_LIBS) $(LIBNLGENL3_LIBS)
 
-exportfs_CPPFLAGS = $(AM_CPPFLAGS) $(CPPFLAGS) -I$(top_srcdir)/support/reexport
+exportfs_CPPFLAGS = $(AM_CPPFLAGS) $(CPPFLAGS) -I$(top_srcdir)/support/reexport \
+		$(LIBNL3_CFLAGS) $(LIBNLGENL3_CFLAGS)
 
 MAINTAINERCLEANFILES = Makefile.in
